@@ -30,6 +30,7 @@ import (
 	"go.jetpack.io/devbox/internal/searcher"
 	"go.jetpack.io/devbox/internal/shellgen"
 	"go.jetpack.io/devbox/internal/telemetry"
+	"go.jetpack.io/devbox/internal/wrapnix"
 
 	"go.jetpack.io/devbox/internal/boxcli/usererr"
 	"go.jetpack.io/devbox/internal/cmdutil"
@@ -67,7 +68,6 @@ type Devbox struct {
 	pure                     bool
 	allowInsecureAdds        bool
 	customProcessComposeFile string
-	OmitBinWrappersFromPath  bool
 
 	// This is needed because of the --quiet flag.
 	stderr io.Writer
@@ -98,7 +98,6 @@ func Open(opts *devopt.Opts) (*Devbox, error) {
 		pure:                     opts.Pure,
 		customProcessComposeFile: opts.CustomProcessComposeFile,
 		allowInsecureAdds:        opts.AllowInsecureAdds,
-		OmitBinWrappersFromPath:  opts.OmitBinWrappersFromPath,
 	}
 
 	lock, err := lock.GetFile(box)
@@ -221,6 +220,19 @@ func (d *Devbox) RunScript(ctx context.Context, cmdName string, cmdArgs []string
 	if err != nil {
 		return err
 	}
+
+	// By default we always remove bin wrappers when using `run`. This env var is
+	// for testing. Once we completely remove bin wrappers we can remove this.
+	// It helps simulate shell using "run".
+	if includeBinWrappers, _ := strconv.ParseBool(
+		os.Getenv("DEVBOX_INCLUDE_BIN_WRAPPERS_IN_PATH"),
+	); !includeBinWrappers {
+		env["PATH"] = envpath.RemoveFromPath(
+			env["PATH"],
+			wrapnix.WrapperBinPath(d.projectDir),
+		)
+	}
+
 	// Used to determine whether we're inside a shell (e.g. to prevent shell inception)
 	// This is temporary because StartServices() needs it but should be replaced with
 	// better alternative since devbox run and devbox shell are not the same.
@@ -856,13 +868,6 @@ func (d *Devbox) computeNixEnv(ctx context.Context, usePrintDevEnvCache bool) (m
 		nix.ProfileBinPath(d.projectDir),
 		env["PATH"],
 	)
-
-	if !d.OmitBinWrappersFromPath {
-		env["PATH"] = envpath.JoinPathLists(
-			filepath.Join(d.projectDir, plugin.WrapperBinPath),
-			env["PATH"],
-		)
-	}
 
 	env["PATH"], err = d.addUtilitiesToPath(ctx, env["PATH"])
 	if err != nil {
